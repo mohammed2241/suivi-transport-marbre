@@ -4,32 +4,23 @@ from streamlit_gsheets import GSheetsConnection
 from fpdf import FPDF
 from datetime import datetime
 
-# 1. CONFIGURATION
+# --- CONFIGURATION ---
 st.set_page_config(page_title="Suivi Transport Orchidees", layout="wide")
 
-# 2. TENTATIVE DE CONNEXION GOOGLE (SANS BLOQUER LE SITE)
-try:
-    conn = st.connection("gsheets", type=GSheetsConnection)
-    df_global = conn.read()
-    storage_mode = "GOOGLE"
-except Exception:
-    storage_mode = "LOCAL"
-    if 'journal_local' not in st.session_state:
-        st.session_state.journal_local = pd.DataFrame(columns=["Date", "Transporteur", "Direction", "Matricule", "Prix", "Statut"])
-    df_global = st.session_state.journal_local
+# Connexion Google Sheets
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-# Nettoyage si données vides
-if df_global is None or (isinstance(df_global, pd.DataFrame) and df_global.empty):
+# Lecture forcée (on ne veut pas d'anciennes données en cache)
+df_global = conn.read(ttl=0) 
+
+# Initialisation de secours si le fichier est vide
+if df_global is None or df_global.empty:
     df_global = pd.DataFrame(columns=["Date", "Transporteur", "Direction", "Matricule", "Prix", "Statut"])
 
-# 3. DESIGN DU PORTAIL (COMME AU DÉBUT)
-st.title("🚛 Suivi de Paiement Transport")
-if storage_mode == "GOOGLE":
-    st.caption("✅ Connecté en temps réel à Google Sheets")
-else:
-    st.caption("⚠️ Mode Local (Vérifiez vos Secrets Streamlit pour activer Google)")
+# --- INTERFACE ---
+st.title("🚛 Portail Transport Orchidees")
 
-# --- FORMULAIRE DE SAISIE ---
+# 1. FORMULAIRE
 with st.container():
     col1, col2 = st.columns(2)
     with col1:
@@ -38,45 +29,54 @@ with st.container():
         direction = st.selectbox("Direction", ["SINASTONE", "MEDIAL", "AUTRE"])
     with col2:
         mat = st.text_input("Matricule")
-        pr = st.number_input("Prix (DH)", value=1500, step=50)
+        pr = st.number_input("Prix (DH)", value=1500)
 
     if st.button("✅ Enregistrer la course"):
-        new_data = pd.DataFrame([{
-            "Date": datetime.now().strftime("%d/%m/%Y"),
-            "Transporteur": nom,
-            "Direction": direction,
-            "Matricule": mat,
-            "Prix": pr,
-            "Statut": "Non Payé"
-        }])
-        
-        if storage_mode == "GOOGLE":
-            df_up = pd.concat([df_global, new_data], ignore_index=True)
-            conn.update(data=df_up)
-        else:
-            st.session_state.journal_local = pd.concat([st.session_state.journal_local, new_data], ignore_index=True)
-        
-        st.success(f"Enregistré : {nom}")
-        st.rerun()
+        if mat and nom:
+            # Création de la nouvelle ligne
+            nouvelle_ligne = pd.DataFrame([{
+                "Date": datetime.now().strftime("%d/%m/%Y"),
+                "Transporteur": nom,
+                "Direction": direction,
+                "Matricule": mat,
+                "Prix": pr,
+                "Statut": "Non Payé"
+            }])
+            
+            # On combine l'ancien tableau avec la nouvelle ligne
+            df_final = pd.concat([df_global, nouvelle_ligne], ignore_index=True)
+            
+            # MISE À JOUR CRUCIALE : On renvoie TOUT le tableau mis à jour
+            conn.update(data=df_final)
+            
+            st.success(f"Enregistré pour {nom}")
+            st.rerun() # On force le portail à se recharger pour afficher la nouvelle ligne
 
 st.divider()
 
-# --- AFFICHAGE DES RAPPORTS ---
-tous_t = df_global["Transporteur"].unique()
+# 2. AFFICHAGE PAR DOSSIER (PORTAIL)
+tous_les_noms = df_global["Transporteur"].unique()
 
-for t in tous_t:
-    with st.expander(f"👤 Dossier : {t}", expanded=True):
-        df_t = df_global[df_global["Transporteur"] == t]
-        
-        # Affichage Tableau
-        st.table(df_t[["Date", "Direction", "Matricule", "Prix", "Statut"]])
-        
-        col_m, col_b = st.columns([1, 1])
-        du = df_t[df_t["Statut"] == "Non Payé"]["Prix"].sum()
-        col_m.metric("Dû à ce jour", f"{du} DH")
-        
-        if col_b.button(f"Solder {t}", key=f"pay_{t}"):
-            df_global.loc[df_global["Transporteur"] == t, "Statut"] = "Payé"
-            if storage_mode == "GOOGLE":
+if len(tous_les_noms) == 0:
+    st.info("Aucun trajet enregistré dans le Google Sheet.")
+else:
+    for t in tous_les_noms:
+        # Création d'un dossier visuel pour chaque transporteur
+        with st.expander(f"👤 Dossier de : {t}", expanded=True):
+            # Filtrage des trajets du chauffeur
+            df_chauffeur = df_global[df_global["Transporteur"] == t]
+            
+            # Affichage en tableau propre
+            st.dataframe(df_chauffeur[["Date", "Direction", "Matricule", "Prix", "Statut"]], use_container_width=True)
+            
+            # Calcul du reste à payer
+            reste = df_chauffeur[df_chauffeur["Statut"] == "Non Payé"]["Prix"].sum()
+            
+            c1, c2 = st.columns([1, 1])
+            c1.metric("À régler", f"{reste} DH")
+            
+            if c2.button(f"Solder {t}", key=f"pay_{t}"):
+                # Changer le statut dans le tableau global
+                df_global.loc[df_global["Transporteur"] == t, "Statut"] = "Payé"
                 conn.update(data=df_global)
-            st.rerun()
+                st.rerun()
