@@ -7,14 +7,14 @@ from datetime import datetime
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Suivi Transport Orchidees", layout="wide")
 
-# Connexion Google Sheets (Lecture sans cache pour voir les changements direct)
+# Connexion Google Sheets
 conn = st.connection("gsheets", type=GSheetsConnection)
 df_global = conn.read(ttl=0)
 
 if df_global is None or df_global.empty:
     df_global = pd.DataFrame(columns=["Date", "Transporteur", "Direction", "Matricule", "Prix", "Statut"])
 
-# --- FONCTION PDF ---
+# --- FONCTION PDF AVEC TOTAL ---
 def generer_pdf(df_source, nom_t, titre_rapport):
     pdf = FPDF()
     pdf.add_page()
@@ -31,8 +31,9 @@ def generer_pdf(df_source, nom_t, titre_rapport):
     pdf.cell(35, 10, "Statut", 1)
     pdf.ln()
     
-    # Lignes
+    # Lignes et calcul du total
     pdf.set_font("Arial", size=10)
+    total_rapport = 0
     for _, row in df_source.iterrows():
         pdf.cell(30, 10, str(row['Date']), 1)
         pdf.cell(50, 10, str(row['Direction']), 1)
@@ -40,6 +41,17 @@ def generer_pdf(df_source, nom_t, titre_rapport):
         pdf.cell(35, 10, str(row['Prix']), 1)
         pdf.cell(35, 10, str(row['Statut']), 1)
         pdf.ln()
+        # Additionner le prix (s'assurer que c'est un nombre)
+        try:
+            total_rapport += float(row['Prix'])
+        except:
+            pass
+    
+    # Ligne du Total
+    pdf.ln(5)
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(120, 10, "", 0) # Espace vide
+    pdf.cell(70, 10, f"MONTANT TOTAL : {total_rapport} DH", 1, ln=True, align='C')
     
     return pdf.output(dest='S').encode('latin-1')
 
@@ -76,7 +88,7 @@ for t in chauffeurs:
     with st.expander(f"👤 Dossier : {t}", expanded=True):
         df_t = df_global[df_global["Transporteur"] == t]
         
-        # 1. Tableau avec bouton supprimer pour chaque ligne
+        # 1. Tableau avec bouton supprimer
         for index, row in df_t.iterrows():
             col_info, col_prix, col_statut, col_del = st.columns([4, 1, 2, 1])
             col_info.write(f"📅 {row['Date']} | {row['Direction']} ({row['Matricule']})")
@@ -105,11 +117,11 @@ for t in chauffeurs:
             # Boutons PDF
             col_pdf1, col_pdf2 = st.columns(2)
             
-            # PDF GLOBAL
+            # PDF GLOBAL (Avec Total de tout l'historique)
             pdf_g = generer_pdf(df_t, t, "RAPPORT GLOBAL")
             col_pdf1.download_button(f"📄 Rapport Global {t}", data=pdf_g, file_name=f"Global_{t}.pdf", key=f"pdfg_{t}")
             
-            # PDF NON PAYÉ
+            # PDF NON PAYÉ (Avec Total de la dette uniquement)
             df_np = df_t[df_t["Statut"] == "Non Payé"]
             if not df_np.empty:
                 pdf_np = generer_pdf(df_np, t, "ETAT DES IMPAYÉS")
